@@ -75,3 +75,5 @@ body {
 .rdp-day_button:hover:not(.rdp-day_selected) {
   background-color: rgba(120, 113, 108, 0.2) !important;
 }
+
+}

@@ -1,14 +1,9 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { DayPicker } from "react-day-picker";
 import "react-day-picker/style.css";
-
-interface Schedule {
-  id: string;
-  date: string;
-  description: string;
-  createdAt: string;
-}
+import { db } from "@/lib/db";
+import { id, tx } from "@instantdb/react";
 
 interface Notification {
   id: number;
@@ -20,15 +15,12 @@ interface Notification {
 export default function Calendar() {
   const [selected, setSelected] = useState<Date | undefined>();
   const [description, setDescription] = useState("");
-  const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [loading, setLoading] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
-  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
 
-  // Fetch scheduled dates on mount
-  useEffect(() => {
-    fetchSchedules();
-  }, []);
+  // Real-time query for schedules
+  const { isLoading, error, data } = db.useQuery({ schedules: {} });
+  const schedules = data?.schedules || [];
 
   const showNotification = (
     message: string,
@@ -53,16 +45,6 @@ export default function Calendar() {
     setNotifications((prev) => prev.filter((n) => n.id !== id));
   };
 
-  const fetchSchedules = async () => {
-    try {
-      const res = await fetch("/api/schedules");
-      const data = await res.json();
-      setSchedules(data);
-    } catch (error) {
-      console.error("Failed to fetch schedules:", error);
-    }
-  };
-
   const handleSchedule = async () => {
     if (!selected) return;
 
@@ -71,30 +53,39 @@ export default function Calendar() {
       return;
     }
 
+    // Check if date is in the past
+    const selectedDate = new Date(selected);
+    selectedDate.setHours(0, 0, 0, 0);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    if (selectedDate < today) {
+      showNotification("Date must be in the future", "warning");
+      return;
+    }
+
+    // Check if date already scheduled
+    const dateOnly = selectedDate.toISOString().split("T")[0];
+    const exists = schedules.some((s) => {
+      const scheduleDate = new Date(s.date);
+      return scheduleDate.toISOString().split("T")[0] === dateOnly;
+    });
+
+    if (exists) {
+      showNotification("This date is already scheduled!", "error");
+      return;
+    }
+
     setLoading(true);
     try {
-      const res = await fetch("/api/schedules", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ date: selected.toISOString(), description }),
-      });
+      await db.transact([
+        tx.schedules[id()].update({
+          date: selected,
+          description: description.trim(),
+          createdAt: new Date(),
+        }),
+      ]);
 
-      if (res.status === 409) {
-        showNotification("This date is already scheduled!", "error");
-        return;
-      }
-
-      if (res.status === 400) {
-        const data = await res.json();
-        showNotification(data.error || "Invalid request", "warning");
-        return;
-      }
-
-      if (!res.ok) {
-        throw new Error("Failed to schedule");
-      }
-
-      await fetchSchedules();
       setSelected(undefined);
       setDescription("");
       showNotification("Appointment scheduled successfully!", "success");
@@ -106,18 +97,10 @@ export default function Calendar() {
     }
   };
 
-  const handleRemove = async (id: string) => {
+  const handleRemove = async (scheduleId: string) => {
     showConfirm("Remove this appointment?", async () => {
       try {
-        const res = await fetch(`/api/schedules/${id}`, {
-          method: "DELETE",
-        });
-
-        if (!res.ok) {
-          throw new Error("Failed to remove");
-        }
-
-        await fetchSchedules();
+        await db.transact([tx.schedules[scheduleId].delete()]);
         showNotification("Appointment removed!", "success");
       } catch (error) {
         console.error("Failed to remove schedule:", error);
@@ -128,6 +111,15 @@ export default function Calendar() {
 
   // Convert scheduled dates to Date objects for disabling
   const scheduledDates = schedules.map((s) => new Date(s.date));
+
+  // Show loading state
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-stone-900 via-neutral-900 to-zinc-900">
+        <p className="text-stone-300 text-xl">Loading appointments...</p>
+      </div>
+    );
+  }
 
   return (
     <div
